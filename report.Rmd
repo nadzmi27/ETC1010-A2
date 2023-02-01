@@ -1,0 +1,479 @@
+---
+title: "Starbucks Data Analysis"
+output: 
+  flexdashboard::flex_dashboard:
+        orientation: columns
+        theme: 
+          version: 4
+          bootswatch: lux
+        vertical_layout: scroll
+        source_code: embed
+        
+---
+
+<style>
+<!-- table { -->
+<!--   white-space: wrap; -->
+<!-- } -->
+
+<!-- .chart-shim{ -->
+<!--   font-size: 9pt; -->
+<!-- } -->
+
+<!-- body { -->
+<!--   zoom: 90%; -->
+<!-- } -->
+
+<!-- .xy{ -->
+<!--   zoom: 90%; -->
+<!-- } -->
+
+.section.sidebar {
+    font-size: 11pt;
+}
+
+#navbar
+{
+    font-size: 13px;
+}
+
+.navbar-brand{
+    font-size: 18px;
+}
+</style>
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, warning = FALSE, message = FALSE)
+options(Encoding = "UTF-8")
+
+library(flexdashboard)
+library(tidyverse)
+library(gridExtra)
+library(kableExtra)
+library(ggplot2)
+library(plotly)
+library(naniar)
+library(Hmisc)
+library(ggcorrplot)
+library(heatmaply)
+library(reactable)
+library(ggrepel)
+
+```
+
+```{r initialise, include=FALSE}
+starbucks <- readr::read_csv("https://raw.githubusercontent.com/rfordatascience/tidytuesday/master/data/2021/2021-12-21/starbucks.csv")
+
+# For rounding the mean of vector
+mean_round <- function(x, n) {
+  round(mean(x, na.rm = TRUE), n)
+}
+```
+
+😜  Introduction 
+===============================
+
+<h1> Introduction </h1>
+**Note: Please change the zoom level to 90% when viewing in website**\
+<p style="font-size:18px">
+In this analysis, we will be using <u>[Starbucks Nutritional Dataset ](https://github.com/rfordatascience/tidytuesday/blob/master/data/2021/2021-12-21/readme.md)</u>
+provided by Tidy Tuesday to analyse the healthiness of Starbucks' drinks, mainly in term of Caffeine, Sugar, and Calories content. The analysis will consist of two main part as following:
+</p>
+
+<div style="font-size:18px">
+<ul>
+  <li> Part 1:
+    <ol type = "1">>
+      <li>How does nutrition correlate with each other?</li>
+      <li>How does milk affect the nutrition?</li>
+    </ol>
+  </li>
+  <li> Part 2:
+    <ol type = "1">>
+      <li>Which drinks (for each drink type) has the highest caffeine?</li>
+      <li>How does calories and sugar vary across drinks?</li>
+      <li>Which drink (average over all size) is the unhealthiest and healthiest?</li>
+    </ol>
+  </li>
+</ul>
+</div>
+
+
+***
+
+<h3>Student Info</h3>
+
+<p style="font-size:16px">
+<span class="text-primary">Student Name:</span> Mohammad Nadzmi Ag Thomas\
+<span class="text-primary">Student Id:</span> ########\
+<span class="text-primary">Email Address: </span>########@student.monash.edu
+</p>
+
+
+
+🤔  Methodology 
+===============================
+
+Columns {.tabset}
+-------------------------------
+
+### Data Cleaning {data-height=770}
+
+```{r cleaning, echo=TRUE}
+
+## Size, milk should be factor, trans_fat_g and fiber_g should be numeric
+starbucks <- starbucks %>% mutate(
+  size = str_to_title(size),
+  size = as.factor(size),
+  milk = as.factor(milk),
+  trans_fat_g = as.numeric(trans_fat_g),
+  fiber_g = as.numeric(fiber_g)
+)
+
+## Rename the milk type
+levels(starbucks$milk) <- c("None", "Nonfat", "2%", "Soy", "Coconut", "Whole")
+
+## Let add column for the category of drink
+# First, we categorize drink
+drinks <- c(
+  "tea" = "Tea", "chai" = "Tea", "chocolate" = "Chocolate", "frappuccino" = "Frappuccino",
+  "smoothie" = "Other", "refreshers" = "Other", "lemonade" = "Other", "brewed" = "Brewed",
+  "caramel apple spice" = "Other"
+)
+
+# Then define a function to assign drink category
+define_drink <- function(x, drinks = drinks) {
+  x <- tolower(x)
+  for (drink in names(drinks)) {
+    if (grepl(drink, x, fixed = TRUE)) {
+      return(drinks[drink][[1]])
+    }
+  }
+  return("Coffee")
+}
+
+# Finally apply previous function to the starbucks data
+starbucks <- starbucks %>% mutate(drink_type = map_chr(product_name, define_drink, drinks = drinks))
+
+## Let's make a copy of tibble, with better name for visualisation later on
+starbucks_clean_name <- starbucks
+names(starbucks_clean_name) <- c(
+  "Product Name", "Size", "Milk", "Whip", "Serving Size", "Calories",
+  "Total Fat", "Saturated Fat", "Trans Fat", "Cholesterol", "Sodium", "Total Carbs", "Fiber", "Sugar", "Caffeine",
+  "Drink Type"
+)
+```
+```{r Serving Size, include=FALSE}
+# Check the serving size
+starbucks$serv_size_m_l %>% table() # 31 empty serving size (most likely the shots)
+star_size <- starbucks %>%
+  group_by(size) %>%
+  summarise(across(c(serv_size_m_l, sugar_g, caffeine_mg, calories), list(mean)))
+star_size
+# there's 6 size with 0 serving size, and all of them low content of calories, sugar
+# However, most of them have high contain of caffeine, so they are likely to be shots
+
+star_size %>%
+  filter(serv_size_m_l_1 == 0) %>%
+  arrange(caffeine_mg_1)
+# solo means 1 shot, doppio mean 2 shot, triple mean 3 shot and quad is 4 shot
+# For every shot we add, the amount of caffeine increase by 75 mg
+```
+
+### Missing Data {data-height=700}
+
+```{r check for missing value, echo=TRUE}
+vis_miss(starbucks) # No missing value
+```
+
+### Part 1 {data-height=700}
+```{r part-1, echo = TRUE}
+## Manipulating the data for Figure 1
+# Only get numeric columns
+star_num <- starbucks_clean_name %>%
+  select_if(is.numeric) %>%
+  select(-c(Whip, `Serving Size`))
+
+# Compute correlation and p-value
+star_cor <- star_num %>%
+  as.matrix() %>%
+  rcorr()
+
+star_coeff <- star_cor$r
+star_p <- star_cor$P
+
+# Add prefix "p-value:" to every p-value
+star_p[] <- paste(" p-value:", star_p)
+
+```
+
+### Part 2 {data-height=770}
+```{r, echo=TRUE}
+
+## Get starbucks drink with serving size greater than 0
+star_drinks <- starbucks_clean_name %>%
+  filter(`Serving Size` > 0) %>%
+  select(`Product Name`, Size, `Drink Type`, Sugar, Calories, Caffeine, Milk)
+
+## Get top 5 drink with highest caffeine content for each drink group (Figure 3)
+star_caffeine <- star_drinks %>%
+  group_by(`Product Name`) %>%
+  filter(row_number(-Caffeine) == 1) %>%
+  group_by(`Drink Type`) %>%
+  filter(row_number(-Caffeine) %in% c(1:5))
+
+## Define daily sugar and caffeine recommended limit 
+sugar_intake <- 30 
+caffeine_intake <- 400 
+
+## Calculation for proportion of above sugar levels
+n <- star_drinks %>% nrow()
+star_above_sugar <- star_drinks %>% filter(Sugar >= sugar_intake)
+total_above_sugar <- star_above_sugar %>% nrow()
+proportion_above_sugar <- star_above_sugar %>%
+  group_by(`Drink Type`) %>%
+  tally(name = "Total") %>%
+  mutate(Total = round(100 * Total / total_above_sugar, 0)) %>%
+  arrange(-Total)
+
+## Ranking the drinks in term of healthiness (figure 5 and 6)
+star_rank <- star_drinks %>%
+  group_by(`Product Name`) %>%
+  summarise(Sugar = mean_round(Sugar, 3), Calories = mean_round(Calories, 3), Caffeine = mean_round(Caffeine, 3)) %>%
+  mutate(`Healthy Rank` = rank(rank(Sugar) + rank(Calories) + rank(Caffeine), ties.method = "min"))
+
+star_healthy <- star_rank %>% arrange(`Healthy Rank`)
+star_unhealthy <- star_rank %>%
+  mutate(`Unhealthy Rank` = rank(-`Healthy Rank`, ties.method = "min")) %>%
+  select(-c(`Healthy Rank`)) %>%
+  arrange(`Unhealthy Rank`)
+```
+
+🤓   Part 1
+===============================
+
+Info {.sidebar data-width=300}
+-------------------------------
+In this part we will explore the relationship between different nutrition and also how the milk affect the nutrition.
+
+1.1 How does nutrition correlate with each other?
+
+- We can see a visible rectangle from Calories to Cholesterol. This indicate that Calories, Cholesterol and all kind of fat are related to each other. This is further supported by the p-value of each dot, which is 0 (or extremely close to 0)
+
+- Calories, Sugar and Total Carbs are also highly correlated to each other. This make sense as Sugar contain a lot of Carbs, and Carbs is the source of Energy (Calories) 
+
+- Caffeine in drinks on the other hand has little to no correlation with any nutritional value
+
+1.2 How does milk affect the nutrition?
+
+- The introduction of milk in drink increase the overall mean of Calories, Total Fat, Cholesterol and Sugar across all drinks.
+
+- Whole milk contain the highest Calories, Total Fat, Cholesterol. This make sense as whole milk will contain the most total fat by default, and total fat is highly correlated with Calories and Cholesterol
+
+- Milk has no effect on Caffeine, this should be obvious as most milk contain no Caffeine
+
+
+
+
+Column {data-width=400}
+-------------------------------
+
+### How does nutrition correlate with each other?
+
+```{r}
+# Plot heatmap
+p_heatmap <- heatmaply_cor(
+  star_coeff,
+  node_type = "scatter",
+  dendrogram = "none",
+  margins = c(NA, NA, 30, NA),
+  point_size_mat = round((abs(star_coeff) + 0.25)^2.5, 3),
+  point_size_name = "Point Size (meaningless)",
+  scale_fill_gradient_fun = scale_colour_gradient2(
+    low = "brown",
+    mid = "white",
+    high = "#005438",
+    midpoint = 0
+  ),
+  label_names = c(" Row", " Column", " Correlation"),
+  custom_hovertext = star_p
+)
+
+p_heatmap
+```
+> Figure 1. Correlation heatmap of nutrition
+
+Column {data-width=400}
+-------------------------------
+
+### How does milk affect the nutrition?
+
+```{r}
+# Table 
+starbucks %>%
+  group_by(milk) %>%
+  summarise(
+    "Calories (KCal)" = mean_round(calories, 2),
+    "Total Fat (gram)" = mean_round(total_fat_g, 2),
+    "cholesterol (miligram)" = mean_round(cholesterol_mg, 2),
+    "Sugar (gram)" = mean_round(sugar_g, 2),
+    "Caffeine (miligram)" = mean_round(caffeine_mg, 2)
+  ) %>%
+  rename("Milk" = milk) %>%
+  reactable(
+    defaultColDef = colDef(headerStyle = list(background = "#f7f7f8")),
+    theme = reactableTheme(
+      borderColor = "#dfe2e5",
+      stripedColor = "#f6f8fa",
+      highlightColor = "#f0f5f9",
+      cellPadding = "8px 12px",
+      style = list(fontFamily = "-apple-system, BlinkMacSystemFont, Segoe UI, Helvetica, Arial, sans-serif"),
+      searchInputStyle = list(width = "100%")
+    ),
+    striped = TRUE, highlight = TRUE
+  )
+```
+> Figure 2. Table of nutrition affected by milk type
+
+😎   Part 2 
+==================================
+
+Info {.sidebar data-width=300}
+----------------------------------
+\
+\
+In this part we will explore the Calories, Caffeine, and Sugar content in different drinks and drink type. We will also try to rank the drinks in term of unhealthiness and healthiness. 
+
+2.1 Which drinks (for each drink type) has the highest Caffeine?
+
+- Brewed drink has the highest Caffeine content. Furthermore, 5 of brewed drinks went past the recommended daily Caffeine limit (`r caffeine_intake` milligram)
+
+- Other category of drink, excluding refreshers, has 0 caffeine content
+
+2.2 How does Calories and Sugar vary across drinks?
+
+- As Sugar increase, Calories also increase (similar to part 1.1)
+
+- About `r round(100*total_above_sugar/n, 2)`% of Starbucks drink contain more sugar than recommended daily intake (30 gram). And out of those drinks, `r proportion_above_sugar[1,1][[1]]` contain `r proportion_above_sugar[1,2][[1]]`% followed by `r proportion_above_sugar[2,1][[1]]` with `r proportion_above_sugar[2,2][[1]]`% and `r proportion_above_sugar[3,1][[1]]` with `r proportion_above_sugar[3,2][[1]]`% 
+
+2.3 Which drink (average over all size) is the unhealthiest and healthiest? 
+
+- Iced White Chocolate Mocha is the unhealthiest overall
+
+- Four drinks are tied in being the healthiest. And all four drinks have 0 Sugar, Calories, and Caffeine Content
+
+
+Intake recommendation {.tabset data-width=488}
+-------------------------------
+
+### Caffeine {data-height=490}
+```{r}
+# Rearrange based on drink to capitalize 2 of brewed coffee
+star_caffeine <- star_caffeine %>%
+  arrange(`Drink Type`)
+star_caffeine[1, 1] <- "Brewed Coffee - Medium Roast"
+star_caffeine[2,1] <- "Brewed Coffee - True North Blend Blonde Roast"
+
+# Plot scatterplot
+p_caff <- star_caffeine %>% 
+  ggplot(aes(
+    y = reorder(`Product Name`, Caffeine), x = Caffeine, fill = `Drink Type`,
+    text = c(paste("Drink:", `Product Name`, "\nCaffeine:", Caffeine, "\nSize:", Size))
+  )) +
+  geom_col() +
+  geom_vline(xintercept = caffeine_intake, linetype = "dashed") +
+  geom_text(aes(x = caffeine_intake - 90, y = 10, label = "Recommended \nCaffeine Limit", text = c("")), colour = "black") +
+  xlab("Caffeine (mg)") +
+  theme_bw() +
+  theme(axis.title.y = element_blank())
+
+
+p_caff %>% ggplotly(tooltip = c("text"))
+
+```
+> Figure 3. Top 5 highest Caffeine content of each drink group (sorted)
+
+
+### Calories and Sugar {data-height=534}
+```{r}
+p_cal_sgr <- star_drinks %>%
+  arrange(desc(`Drink Type`)) %>%
+  ggplot(aes(
+    text = c(paste("Sugar:", Sugar, "\nCalories:", Calories, "\nDrink:", `Product Name`, "\nDrink Type", `Drink Type`, "\nSize:", Size, "\nMilk:", Milk)),
+    x = Sugar, y = Calories, color = `Drink Type`
+  )) +
+  geom_point(size = 1) +
+  geom_vline(xintercept = sugar_intake, linetype = "dashed") +
+  geom_text(aes(x = sugar_intake + 10, label = "Reccomended \nSugar Limit", y = 600, text = c("")), colour = "black") +
+  scale_x_continuous(breaks = seq(0, 90, by = 10)) + 
+  scale_y_continuous(breaks = seq(0, 650, by = 100)) + 
+  theme_bw()
+
+p_cal_sgr %>% ggplotly(tooltip = c("text"))
+```
+> Figure 4. Calories and Sugar content across all drinks
+
+
+Healthy vs Unhealthy {.tabset data-width=312}
+-------------------------------
+
+### Top Unhealthy {data-height=490}
+```{r}
+reactable(star_unhealthy, defaultColDef = colDef(align = "left"))
+```
+> Figure 5. Unhealthy drink ranked
+
+
+### Top Healthy {data-height=534}
+```{r}
+reactable(star_healthy, defaultColDef = colDef(align = "left"))
+```
+> Figure 6. Healthy drink ranked
+
+
+
+😴  Conclusion & References
+=====================================     
+
+<h1>Conclusion </h1>
+
+
+<p style="font-size:20px">Important findings from the data analysis:</p>
+
+<div style="font-size:18px">
+<ul>
+  <li> Part 1:
+    <ul>>
+      <li>Calories, Cholesterol and every kind of Fat are highly correlated with each other</li>
+      <li>Caffeine is not affected by other nutritional value</li>
+      <li>Whole milk should be avoided for those who want to lose weight</li>
+    </ul>
+  </li>
+  <li> Part 2:
+    <ul>>
+      <li>Most Starbucks drinks has caffeine content below the daily recommendation, except for five brewed coffee</li>
+      <li>About `r round(100*total_above_sugar/n, 2)`%  of drinks contain more sugar than daily recommendation</li>
+      <li>Iced White Chocolate Mocha is the unhealthiest drink, while brewed tea (category) are the healthiest</li>
+    </ul>
+  </li>
+</ul>
+</div>
+
+***
+<h3>Reference </h3>
+<div style="font-size:16px">
+[1] Sievert et al. (n.d.). Using flexdashboard. https://rstudio.github.io/flexdashboard/articles/using.html
+
+[2] Mayo Clinic Staff. (2022). Nutrition and healthy eating. https://www.mayoclinic.org/healthy-lifestyle/nutrition-and-healthy-eating/in-depth/caffeine/art-20045678#
+
+[3] NHS England. (2020). Sugar: the facts. https://www.nhs.uk/live-well/eat-well/food-types/how-does-sugar-in-our-diet-affect-our-health/
+
+[4] Sievert et al. (n.d.). Theming flexdashboard. https://rstudio.github.io/flexdashboard/articles/theme.html
+
+[5] Xie et al. (2022). R Markown Cookbook. https://bookdown.org/yihui/rmarkdown-cookbook/
+
+[6] Galili, T., & O'Callaghan, A. (2022). Introduction to heatmaply. https://cran.r-project.org/web/packages/heatmaply/vignettes/heatmaply.html
+
+</div>
+
